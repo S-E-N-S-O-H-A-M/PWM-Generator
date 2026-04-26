@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PWM Generator — Design Document</title>
+    <style>
+        :root { --bg: #0d1117; --fg: #c9d1d9; --accent: #58a6ff; --card-bg: #161b22;
+                --border: #30363d; --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif;
+               background: var(--bg); color: var(--fg); line-height: 1.7; padding: 2rem; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { color: var(--accent); font-size: 2rem; border-bottom: 2px solid var(--accent);
+             padding-bottom: .4rem; margin-bottom: 1.5rem; }
+        h2 { color: var(--accent); font-size: 1.35rem; margin: 2rem 0 .8rem;
+             border-left: 4px solid var(--accent); padding-left: .6rem; }
+        h3 { color: var(--yellow); margin: 1.2rem 0 .5rem; }
+        p, li { margin-bottom: .5rem; }
+        ul { padding-left: 1.5rem; }
+        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+        th, td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; }
+        th { background: var(--accent); color: var(--bg); }
+        tr:nth-child(even) { background: var(--card-bg); }
+        code, pre { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+                    background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; }
+        code { padding: 2px 6px; font-size: .9em; }
+        pre  { padding: 1rem; overflow-x: auto; margin: 1rem 0; font-size: .85em; line-height: 1.5; }
+        .card { background: var(--card-bg); border: 1px solid var(--border);
+                border-radius: 8px; padding: 1.2rem; margin: 1rem 0; }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 12px;
+                 font-size: .8em; font-weight: 600; }
+        .badge-green  { background: var(--green); color: var(--bg); }
+        .badge-purple { background: var(--purple); color: var(--bg); }
+        .note { background: #1c2333; border-left: 4px solid var(--yellow);
+                padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+        .waveform { background: var(--card-bg); border: 1px solid var(--border);
+                    border-radius: 8px; padding: 1rem; margin: 1rem 0; overflow-x: auto; }
+        footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border);
+                 color: #8b949e; font-size: .85em; text-align: center; }
+    </style>
+</head>
+<body>
+<div class="container">
+
+<!-- ================= HEADER ================= -->
+<h1>PWM Generator (pwm_gen) — Design &amp; Verification Document</h1>
+<p><strong>Date:</strong> 2026-04-25 &nbsp;|&nbsp;
+   <strong>Author:</strong> Chitty &nbsp;|&nbsp;
+   <span class="badge badge-green">RTL + TB</span> &nbsp;
+   <span class="badge badge-purple">Configurable</span></p>
+
+<!-- ================= OVERVIEW ================= -->
+<h2>1. Overview</h2>
+<p>A synthesisable <strong>Pulse Width Modulation (PWM) generator</strong> in Verilog with
+   variable duty cycle.  The duty cycle can be changed on-the-fly; a <em>double-buffered</em>
+   duty register ensures glitch-free transitions at period boundaries.</p>
+
+<div class="card">
+    <h3>Key Features</h3>
+    <ul>
+        <li>Parameterised resolution via <code>PWM_BITS</code> (default 8 → 256 duty levels).</li>
+        <li>Clock prescaler (<code>PRESCALER</code>) to lower the PWM frequency.</li>
+        <li>Double-buffered duty register — new value takes effect at the next period boundary.</li>
+        <li>Enable pin — output forced LOW when <code>en = 0</code>.</li>
+        <li>Fully synchronous with asynchronous active-low reset.</li>
+    </ul>
+</div>
+
+<!-- ================= HOW PWM WORKS ================= -->
+<h2>2. PWM Principle</h2>
+<p>A PWM signal is a square wave whose <strong>duty cycle</strong> (fraction of time spent HIGH)
+   is varied to encode an analog-like value digitally.</p>
+
+<div class="waveform">
+<svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+  <!-- 25% duty -->
+  <text x="10" y="30" fill="#d29922" font-weight="600">25% Duty</text>
+  <polyline points="40,55 40,35 85,35 85,55 220,55 220,35 265,35 265,55 400,55" fill="none" stroke="#3fb950" stroke-width="2"/>
+  <text x="410" y="48" fill="#8b949e">duty_in = 64</text>
+
+  <!-- 50% duty -->
+  <text x="10" y="95" fill="#d29922" font-weight="600">50% Duty</text>
+  <polyline points="40,120 40,100 130,100 130,120 220,120 220,100 310,100 310,120 400,120" fill="none" stroke="#58a6ff" stroke-width="2"/>
+  <text x="410" y="113" fill="#8b949e">duty_in = 128</text>
+
+  <!-- 75% duty -->
+  <text x="10" y="160" fill="#d29922" font-weight="600">75% Duty</text>
+  <polyline points="40,185 40,165 175,165 175,185 220,185 220,165 355,165 355,185 400,185" fill="none" stroke="#f85149" stroke-width="2"/>
+  <text x="410" y="178" fill="#8b949e">duty_in = 192</text>
+
+  <!-- Period markers -->
+  <line x1="40" y1="25" x2="40" y2="195" stroke="#30363d" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="220" y1="25" x2="220" y2="195" stroke="#30363d" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="400" y1="25" x2="400" y2="195" stroke="#30363d" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="120" y="198" fill="#8b949e" text-anchor="middle" font-size="10">← Period →</text>
+</svg>
+</div>
+
+<p><strong>PWM Frequency</strong> = <code>clk / (PRESCALER × 2<sup>PWM_BITS</sup>)</code></p>
+<p>Example: 50 MHz clock, PRESCALER=1, 8-bit → 50 000 000 / 256 ≈ <strong>195.3 kHz</strong></p>
+
+<!-- ================= BLOCK DIAGRAM ================= -->
+<h2>3. Block Diagram</h2>
+<div class="waveform" style="text-align:center;">
+<svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="13">
+  <!-- Prescaler -->
+  <rect x="30" y="30" rx="10" ry="10" width="140" height="50" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+  <text x="100" y="60" fill="#c9d1d9" text-anchor="middle" font-weight="600">Prescaler</text>
+  <text x="100" y="75" fill="#8b949e" text-anchor="middle" font-size="10">÷ PRESCALER</text>
+
+  <!-- Counter -->
+  <rect x="230" y="30" rx="10" ry="10" width="140" height="50" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+  <text x="300" y="60" fill="#c9d1d9" text-anchor="middle" font-weight="600">Counter</text>
+  <text x="300" y="75" fill="#8b949e" text-anchor="middle" font-size="10">PWM_BITS wide</text>
+
+  <!-- Duty Buffer -->
+  <rect x="230" y="130" rx="10" ry="10" width="140" height="50" fill="#161b22" stroke="#d29922" stroke-width="2"/>
+  <text x="300" y="155" fill="#c9d1d9" text-anchor="middle" font-weight="600">Duty Buffer</text>
+  <text x="300" y="170" fill="#8b949e" text-anchor="middle" font-size="10">double-buffered</text>
+
+  <!-- Comparator -->
+  <rect x="430" y="80" rx="10" ry="10" width="140" height="50" fill="#161b22" stroke="#3fb950" stroke-width="2"/>
+  <text x="500" y="105" fill="#c9d1d9" text-anchor="middle" font-weight="600">Comparator</text>
+  <text x="500" y="120" fill="#8b949e" text-anchor="middle" font-size="10">counter &lt; duty</text>
+
+  <!-- Enable gate -->
+  <rect x="430" y="180" rx="10" ry="10" width="140" height="40" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
+  <text x="500" y="205" fill="#c9d1d9" text-anchor="middle" font-weight="600">EN Gate</text>
+
+  <!-- Arrows -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#58a6ff"/></marker>
+    <marker id="arrG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#3fb950"/></marker>
+  </defs>
+  <!-- clk → prescaler -->
+  <text x="5" y="58" fill="#c9d1d9" font-size="11">clk</text>
+  <line x1="22" y1="55" x2="28" y2="55" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+  <!-- prescaler → counter (tick) -->
+  <line x1="170" y1="55" x2="226" y2="55" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="195" y="48" fill="#3fb950" font-size="10">tick</text>
+  <!-- counter → comparator -->
+  <line x1="370" y1="55" x2="428" y2="90" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+  <!-- duty_in → duty buffer -->
+  <text x="145" y="158" fill="#c9d1d9" font-size="11">duty_in</text>
+  <line x1="195" y1="155" x2="226" y2="155" stroke="#d29922" stroke-width="2" marker-end="url(#arr)"/>
+  <!-- duty buffer → comparator -->
+  <line x1="370" y1="155" x2="428" y2="115" stroke="#d29922" stroke-width="2" marker-end="url(#arr)"/>
+  <!-- comparator → EN gate -->
+  <line x1="500" y1="130" x2="500" y2="176" stroke="#3fb950" stroke-width="2" marker-end="url(#arrG)"/>
+  <!-- en → EN gate -->
+  <text x="405" y="203" fill="#c9d1d9" font-size="11">en</text>
+  <line x1="425" y1="200" x2="428" y2="200" stroke="#bc8cff" stroke-width="2"/>
+  <!-- EN gate → pwm_out -->
+  <line x1="570" y1="200" x2="640" y2="200" stroke="#3fb950" stroke-width="2" marker-end="url(#arrG)"/>
+  <text x="645" y="203" fill="#3fb950" font-weight="600">pwm_out</text>
+  <!-- wrap label -->
+  <path d="M300,80 Q300,110 300,128" fill="none" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="310" y="108" fill="#8b949e" font-size="9">latch @ wrap</text>
+</svg>
+</div>
+
+<!-- ================= PORT LIST ================= -->
+<h2>4. Port Description</h2>
+<table>
+    <tr><th>Port</th><th>Direction</th><th>Width</th><th>Description</th></tr>
+    <tr><td><code>clk</code></td><td>Input</td><td>1</td>
+        <td>System clock</td></tr>
+    <tr><td><code>rst_n</code></td><td>Input</td><td>1</td>
+        <td>Active-low asynchronous reset</td></tr>
+    <tr><td><code>en</code></td><td>Input</td><td>1</td>
+        <td>PWM enable — output forced LOW when 0</td></tr>
+    <tr><td><code>duty_in[N-1:0]</code></td><td>Input</td><td>PWM_BITS</td>
+        <td>Duty cycle value (0 = 0%, all-1s ≈ 100%)</td></tr>
+    <tr><td><code>pwm_out</code></td><td>Output</td><td>1</td>
+        <td>PWM output signal</td></tr>
+</table>
+
+<!-- ================= PARAMETERS ================= -->
+<h2>5. Parameters</h2>
+<table>
+    <tr><th>Parameter</th><th>Default</th><th>Description</th></tr>
+    <tr><td><code>PWM_BITS</code></td><td>8</td>
+        <td>Counter width — gives 2<sup>N</sup> duty levels</td></tr>
+    <tr><td><code>PRESCALER</code></td><td>1</td>
+        <td>Clock divider (1 = no division)</td></tr>
+</table>
+
+<div class="note">
+    <strong>Duty cycle formula:</strong><br>
+    Duty % = <code>duty_in / 2<sup>PWM_BITS</sup> × 100</code><br>
+    Example (8-bit): duty_in = 128 → 128/256 × 100 = <strong>50%</strong>
+</div>
+
+<!-- ================= DOUBLE BUFFER ================= -->
+<h2>6. Double-Buffer Mechanism</h2>
+<p>To prevent glitches, <code>duty_in</code> is <strong>not</strong> used directly by the comparator.
+   Instead it is latched into <code>duty_buf</code> only when the counter wraps from
+   <code>2<sup>N</sup>−1</code> back to <code>0</code>.  This guarantees a clean, complete
+   pulse every period regardless of when the user changes <code>duty_in</code>.</p>
+
+<pre>
+      Period N                   Period N+1
+  ┌─────────────────┐       ┌─────────────────┐
+  │ duty_buf = OLD   │       │ duty_buf = NEW   │
+  └─────────────────┘       └─────────────────┘
+                    ▲ counter wraps — latch duty_in → duty_buf
+                    │
+        duty_in changed here (mid-period) — no effect until wrap
+</pre>
+
+<!-- ================= RTL CODE ================= -->
+<h2>7. RTL Source — <code>pwm_gen.v</code></h2>
+<pre>
+module pwm_gen #(
+    parameter PWM_BITS  = 8,
+    parameter PRESCALER = 1
+)(
+    input  wire                 clk,
+    input  wire                 rst_n,
+    input  wire                 en,
+    input  wire [PWM_BITS-1:0]  duty_in,
+    output reg                  pwm_out
+);
+
+    reg [PWM_BITS-1:0] counter;
+    reg [PWM_BITS-1:0] duty_buf;
+    reg [15:0]         pre_cnt;
+
+    wire tick = (pre_cnt == PRESCALER - 1);
+
+    // Prescaler
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)        pre_cnt &lt;= 16'd0;
+        else if (tick)     pre_cnt &lt;= 16'd0;
+        else               pre_cnt &lt;= pre_cnt + 1'b1;
+    end
+
+    // PWM counter + duty buffer
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            counter  &lt;= {PWM_BITS{1'b0}};
+            duty_buf &lt;= {PWM_BITS{1'b0}};
+        end else if (tick) begin
+            if (counter == {PWM_BITS{1'b1}}) begin
+                counter  &lt;= {PWM_BITS{1'b0}};
+                duty_buf &lt;= duty_in;       // latch at period boundary
+            end else
+                counter &lt;= counter + 1'b1;
+        end
+    end
+
+    // Comparator + enable gate
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)    pwm_out &lt;= 1'b0;
+        else if (!en)  pwm_out &lt;= 1'b0;
+        else           pwm_out &lt;= (counter &lt; duty_buf);
+    end
+endmodule
+</pre>
+
+<!-- ================= TESTBENCH ================= -->
+<h2>8. Testbench — <code>pwm_gen_tb.v</code></h2>
+<pre>
+`timescale 1ns / 1ps
+module pwm_gen_tb;
+
+    parameter PWM_BITS  = 8;
+    parameter PRESCALER = 1;
+    localparam PERIOD   = (1 &lt;&lt; PWM_BITS);
+    localparam HALF_CLK = 5;
+
+    reg                  clk;
+    reg                  rst_n;
+    reg                  en;
+    reg [PWM_BITS-1:0]   duty_in;
+    wire                 pwm_out;
+
+    pwm_gen #(.PWM_BITS(PWM_BITS), .PRESCALER(PRESCALER)) dut (
+        .clk(clk), .rst_n(rst_n), .en(en),
+        .duty_in(duty_in), .pwm_out(pwm_out)
+    );
+
+    initial clk = 0;
+    always #(HALF_CLK) clk = ~clk;
+
+    integer pass_count = 0, fail_count = 0;
+
+    task automatic measure_duty;
+        input [PWM_BITS-1:0] expected;
+        integer high_cnt, i, diff;
+        begin
+            high_cnt = 0;
+            repeat (PERIOD + 4) @(posedge clk);
+            for (i = 0; i &lt; PERIOD; i = i + 1) begin
+                @(posedge clk);
+                if (pwm_out) high_cnt = high_cnt + 1;
+            end
+            diff = high_cnt - expected;
+            if (diff &lt; 0) diff = -diff;
+            if (diff &lt;= 2) pass_count = pass_count + 1;
+            else            fail_count = fail_count + 1;
+        end
+    endtask
+
+    initial begin
+        $dumpfile("pwm_gen_tb.vcd");
+        $dumpvars(0, pwm_gen_tb);
+        rst_n = 0; en = 0; duty_in = 0;
+        repeat (10) @(posedge clk); rst_n = 1;
+        repeat (5)  @(posedge clk);
+
+        // Test: disabled, 0%, 25%, 50%, 75%, ~100%,
+        //       mid-period change, disable, re-enable
+        en = 1;
+        duty_in = 8'd0;   measure_duty(8'd0);
+        duty_in = 8'd64;  measure_duty(8'd64);
+        duty_in = 8'd128; measure_duty(8'd128);
+        duty_in = 8'd192; measure_duty(8'd192);
+        duty_in = 8'd255; measure_duty(8'd255);
+
+        $display("PASSED=%0d FAILED=%0d", pass_count, fail_count);
+        $finish;
+    end
+endmodule
+</pre>
+
+<!-- ================= VERIFICATION ================= -->
+<h2>9. Verification Strategy</h2>
+
+<div class="card">
+<h3>Test Cases</h3>
+<table>
+    <tr><th>#</th><th>Test</th><th>duty_in</th><th>Expected Behaviour</th></tr>
+    <tr><td>1</td><td>PWM disabled</td><td>128</td><td><code>pwm_out</code> stays LOW</td></tr>
+    <tr><td>2</td><td>0% duty</td><td>0</td><td><code>pwm_out</code> always LOW</td></tr>
+    <tr><td>3</td><td>25% duty</td><td>64</td><td>HIGH for 64/256 of period</td></tr>
+    <tr><td>4</td><td>50% duty</td><td>128</td><td>HIGH for 128/256 of period</td></tr>
+    <tr><td>5</td><td>75% duty</td><td>192</td><td>HIGH for 192/256 of period</td></tr>
+    <tr><td>6</td><td>~100% duty</td><td>255</td><td>HIGH for 255/256 of period</td></tr>
+    <tr><td>7</td><td>Mid-period change</td><td>64→192</td><td>New duty applied next period only</td></tr>
+    <tr><td>8</td><td>Disable mid-run</td><td>128</td><td>Output drops to LOW immediately</td></tr>
+    <tr><td>9</td><td>Re-enable</td><td>128</td><td>Resumes correct duty</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3>Checking Method</h3>
+<ul>
+    <li>The <code>measure_duty</code> task counts HIGH samples over one full PWM period (256 ticks).</li>
+    <li>Result compared to <code>duty_in</code> with <strong>±2 tick tolerance</strong> (accounts for pipeline latency).</li>
+    <li>Pass/fail counters printed at the end.</li>
+</ul>
+</div>
+
+<!-- ================= SIMULATION ================= -->
+<h2>10. How to Simulate</h2>
+
+<h3>EDA Playground (Synopsys VCS)</h3>
+<ol>
+    <li>Go to <a href="https://www.edaplayground.com/" target="_blank">edaplayground.com</a></li>
+    <li>Set simulator to <strong>Synopsys VCS</strong></li>
+    <li>Paste <code>pwm_gen.v</code> in <strong>Design</strong> tab</li>
+    <li>Paste <code>pwm_gen_tb.v</code> in <strong>Testbench</strong> tab</li>
+    <li>Check <strong>Open EPWave after run</strong></li>
+    <li>Click <strong>Run</strong></li>
+</ol>
+
+<h3>Local — Icarus Verilog</h3>
+<pre>
+iverilog -o pwm_gen_tb.vvp pwm_gen.v pwm_gen_tb.v
+vvp pwm_gen_tb.vvp
+gtkwave pwm_gen_tb.vcd
+</pre>
+
+<h3>Local — Synopsys VCS</h3>
+<pre>
+vcs -sverilog pwm_gen.v pwm_gen_tb.v -o simv
+./simv
+</pre>
+
+<!-- ================= SYNTHESIS ================= -->
+<h2>11. Synthesis Notes</h2>
+<div class="note">
+    <strong>Estimated FPGA resources</strong> (Xilinx 7-series, 8-bit, PRESCALER=1):<br>
+    ~20 LUTs, ~28 FFs.  Fmax &gt; 300 MHz.<br><br>
+    <strong>Tip:</strong> For LED dimming, use <code>PWM_BITS = 8</code> and <code>PRESCALER = 195</code>
+    with a 50 MHz clock to get ~1 kHz PWM — invisible flicker.
+</div>
+
+<!-- ================= APPLICATIONS ================= -->
+<h2>12. Common Applications</h2>
+<table>
+    <tr><th>Application</th><th>Typical PWM Freq</th><th>Suggested Settings (50 MHz clk)</th></tr>
+    <tr><td>LED dimming</td><td>1–10 kHz</td><td>PWM_BITS=8, PRESCALER=195</td></tr>
+    <tr><td>DC motor speed</td><td>10–50 kHz</td><td>PWM_BITS=10, PRESCALER=1</td></tr>
+    <tr><td>Servo control</td><td>50 Hz (20 ms)</td><td>PWM_BITS=16, PRESCALER=15</td></tr>
+    <tr><td>Audio (class-D amp)</td><td>200–400 kHz</td><td>PWM_BITS=7, PRESCALER=1</td></tr>
+    <tr><td>Power supply (SMPS)</td><td>100 kHz–1 MHz</td><td>PWM_BITS=6, PRESCALER=1</td></tr>
+</table>
+
+<!-- ================= EXTENSIONS ================= -->
+<h2>13. Possible Extensions</h2>
+<ul>
+    <li><strong>Dead-time insertion</strong> — for complementary outputs in H-bridge drivers.</li>
+    <li><strong>Phase-correct (centre-aligned) PWM</strong> — counter counts up then down.</li>
+    <li><strong>Multiple channels</strong> — parameterise number of independent outputs.</li>
+    <li><strong>Register interface</strong> — APB/AXI-Lite for runtime configuration from a CPU.</li>
+    <li><strong>Interrupt on period boundary</strong> — notify firmware to update duty.</li>
+</ul>
+
+<!-- ================= INSTANTIATION ================= -->
+<h2>14. Instantiation Example</h2>
+<pre>
+pwm_gen #(
+    .PWM_BITS  (10),        // 1024 duty levels
+    .PRESCALER (1)
+) u_pwm (
+    .clk     (sys_clk),
+    .rst_n   (sys_rst_n),
+    .en      (pwm_enable),
+    .duty_in (duty_register),
+    .pwm_out (LED_PIN)
+);
+</pre>
+
+<footer>
+    Generated 2026-04-25 &bull; PWM Generator Design Document &bull; Chitty
+</footer>
+
+</div>
+</body>
+</html>
